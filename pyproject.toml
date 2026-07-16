@@ -24,6 +24,10 @@ llm = [
     "langchain-azure-ai>=1.0,<2.0",
     "azure-ai-inference>=1.0.0b9",
 ]
+# Démo interactive de la mémoire (interface Streamlit).
+demo = [
+    "streamlit>=1.37,<2",
+]
 
 [dependency-groups]
 dev = [
