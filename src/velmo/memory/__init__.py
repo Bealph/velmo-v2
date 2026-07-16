@@ -84,11 +84,14 @@ class MemoryManager:
     # permettra alors de réduire cette fenêtre sous le budget de tokens.
     RECENT_MESSAGES = 60  # = 30 tours
 
-    def __init__(self, *, token_budget: int = 2000) -> None:
+    def __init__(self, *, token_budget: int = 2000, db_path=None) -> None:
         self.token_budget = token_budget
         # Fabrique appelée ICI (pas au niveau module) : la fixture autouse qui pose
         # VELMO_MEMORY_DB doit être prise en compte à temps.
-        self._Session = memory_session_factory()
+        # `db_path` explicite (défaut None → résolution habituelle env/chemin par défaut) :
+        # l'évaluation MLOps donne à CHAQUE cas un store jetable et isolé, sans toucher
+        # ni l'environnement global ni la mémoire de production (D-isolation #6).
+        self._Session = memory_session_factory(db_path)
         self.session_id = str(uuid.uuid4())  # une session de conversation par instance
 
     # ------------------------------------------------------------------ #

@@ -1,0 +1,26 @@
+# Identité de la version Velmo 2.0 (dossier 03-mlops.md, D26).
+#
+# Une VERSION = ce triplet figé { prompt + config mémoire + config garde-fous }.
+# Dès qu'UN des trois change → nouvelle version → on voit quel changement a fait
+# bouger la note. L'identifiant complet exposé par `current_version()` combine ce
+# numéro sémantique ET le hash de commit git : parlant *et* infalsifiable.
+
+version: 2.0.0
+
+# 1/3 — Prompt système (rôle + garde-fous intégrés).
+# Source de vérité = velmo.agent.SYSTEM_PROMPT ; on en garde ici un résumé auditable.
+prompt:
+  ref: velmo.agent.SYSTEM_PROMPT
+  resume: "Assistant support Velmo — gestion de commandes de niveau 1."
+
+# 2/3 — Config mémoire (cf. dossier 01-memoire.md).
+memory:
+  token_budget: 2000
+  recent_messages: 60      # = 30 tours (exigence R1)
+  lt_enabled: true         # mémoire long terme (faits sémantiques) active
+
+# 3/3 — Config garde-fous (cf. dossier 02-guardrails.md).
+guardrails:
+  categories: [hate, violence, sexual, pii, out_of_scope, prompt_injection, secret_leak]
+  first_line: rules        # 1re ligne regex déterministe (toujours active)
+  moderator: false         # 2e ligne LLM-juge désactivée par défaut → CI déterministe
