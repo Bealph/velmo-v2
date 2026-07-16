@@ -204,8 +204,13 @@ class Agent:
 
 
 def build_default_agent(session=None, kb=None) -> Agent:
-    """Assemble un agent avec composants par défaut, base et FAQ."""
+    """Assemble un agent avec composants par défaut, base et FAQ.
+
+    Les garde-fous reçoivent le LLM-juge (2e ligne) s'il est configuré ; `get_moderator()`
+    renvoie `None` en l'absence d'endpoint/clé → 1re ligne regex seule (déterministe).
+    """
     from .db import session_factory
+    from .guardrails.moderator import get_moderator
     from .kb_store import get_kb
 
     if session is None:
@@ -215,7 +220,7 @@ def build_default_agent(session=None, kb=None) -> Agent:
     return Agent(
         llm=get_llm(),
         memory=MemoryManager(),
-        guardrails=GuardrailEngine(),
+        guardrails=GuardrailEngine(moderator=get_moderator()),
         session=session,
         kb=kb,
     )
