@@ -47,12 +47,29 @@ class AzureLLM:
         return resp.choices[0].message.content
 
 
+def enable_os_truststore() -> None:
+    """Fait confiance au magasin de certificats de l'OS.
+
+    Utile derrière un antivirus / proxy qui inspecte le HTTPS avec son propre CA racine :
+    ce CA est présent dans le magasin Windows mais absent du bundle certifi qu'utilise
+    httpx → sans ça les appels échouent en CERTIFICATE_VERIFY_FAILED. No-op (sûr) si
+    `truststore` n'est pas installé (on garde alors certifi, correct hors inspection TLS).
+    """
+    try:
+        import truststore
+
+        truststore.inject_into_ssl()
+    except Exception:
+        pass
+
+
 def get_llm() -> LLM:
     """Construit le client Azure (OpenAI-compatible) si configuré, sinon `EchoLLM`."""
     endpoint = os.getenv("AZURE_AI_INFERENCE_ENDPOINT")
     if not endpoint:
         return EchoLLM()
 
+    enable_os_truststore()
     from openai import OpenAI
 
     client = OpenAI(base_url=endpoint, api_key=os.environ["AZURE_AI_INFERENCE_API_KEY"])
