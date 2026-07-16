@@ -27,9 +27,15 @@ class EchoLLM:
 
 
 class AzureLLM:
-    """Adapte le modèle de chat Azure AI Inference à l'interface `LLM`."""
+    """Adapte un client OpenAI-compatible (Azure AI Foundry) à l'interface `LLM`.
 
-    def __init__(self, model) -> None:
+    L'endpoint Azure expose une API OpenAI-compatible (`/openai/v1`) → on utilise
+    directement le client `openai.OpenAI(base_url=...)`, comme l'exemple officiel de
+    la ressource.
+    """
+
+    def __init__(self, client, model: str) -> None:
+        self._client = client
         self._model = model
 
     def invoke(self, system: str, context: str, message: str) -> str:
@@ -37,19 +43,18 @@ class AzureLLM:
         if context:
             messages.append({"role": "system", "content": f"Mémoire:\n{context}"})
         messages.append({"role": "user", "content": message})
-        return self._model.invoke(messages).content
+        resp = self._client.chat.completions.create(model=self._model, messages=messages)
+        return resp.choices[0].message.content
 
 
 def get_llm() -> LLM:
-    """Construit le client Azure si configuré, sinon le repli `EchoLLM`."""
-    if not os.getenv("AZURE_AI_INFERENCE_ENDPOINT"):
+    """Construit le client Azure (OpenAI-compatible) si configuré, sinon `EchoLLM`."""
+    endpoint = os.getenv("AZURE_AI_INFERENCE_ENDPOINT")
+    if not endpoint:
         return EchoLLM()
 
-    from langchain_azure_ai.chat_models import AzureAIOpenAIApiChatModel
+    from openai import OpenAI
 
-    model = AzureAIOpenAIApiChatModel(
-        endpoint=os.environ["AZURE_AI_INFERENCE_ENDPOINT"],
-        credential=os.environ["AZURE_AI_INFERENCE_API_KEY"],
-        model=os.environ.get("AZURE_AI_INFERENCE_MODEL", "Kimi-K2.6"),
-    )
-    return AzureLLM(model)
+    client = OpenAI(base_url=endpoint, api_key=os.environ["AZURE_AI_INFERENCE_API_KEY"])
+    model = os.environ.get("AZURE_AI_INFERENCE_MODEL", "grok-4.3")
+    return AzureLLM(client, model)
