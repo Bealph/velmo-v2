@@ -52,7 +52,7 @@ class LLMModerator:
             resp = self._client.chat.completions.create(
                 model=self._model,
                 temperature=0,
-                max_tokens=20,
+                max_completion_tokens=20,
                 messages=[
                     {"role": "system", "content": _SYSTEM},
                     {"role": "user", "content": f"MESSAGE : {text}"},
@@ -84,6 +84,9 @@ def get_moderator() -> LLMModerator | None:
     if not endpoint or not key:
         return None
 
+    from ..llm import enable_os_truststore
+
+    enable_os_truststore()  # inspection TLS antivirus/proxy → magasin de certifs de l'OS
     from openai import OpenAI
 
     client = OpenAI(base_url=endpoint, api_key=key)
