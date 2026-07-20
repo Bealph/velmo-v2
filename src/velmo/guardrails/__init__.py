@@ -89,10 +89,26 @@ _OUTPUT_TEXT_DETECTORS: list[tuple[str, list[re.Pattern[str]]]] = [
     d for d in _INPUT_DETECTORS if d[0] in {"secret_leak", "hate", "violence", "sexual"}
 ]
 
+# Le LLM-juge en SORTIE est restreint aux MÊMES catégories que la 1re ligne (+ pii) :
+# ce sont les seuls dangers reels d'une REPONSE. Sans cette restriction, le juge —
+# qui recoit le texte prefixe « MESSAGE : », donc evalue une reponse avec la semantique
+# d'une requete client — classait en `prompt_injection` une reponse parfaitement
+# legitime qui mentionnait ses propres extraits FAQ (« je n'ai pas l'information dans
+# les extraits fournis (authenticite.md...) »), et refusait le client.
+# `prompt_injection` et `out_of_scope` n'ont aucun sens en sortie : l'agent ne peut pas
+# s'auto-injecter, et un mot hors-perimetre peut legitimement figurer dans une reponse.
+_OUTPUT_MODERATOR_CATEGORIES = {"secret_leak", "hate", "violence", "sexual", "pii"}
+
 # PII à formats fixes — testés sur le texte ORIGINAL (l'IBAN est sensible à la casse).
 # Carte : 4 blocs de 4 chiffres (16) → « O-2024-0101 » (8 chiffres) ne matche pas.
 _CARD = re.compile(r"\b\d{4}(?:[ -]?\d{4}){3}\b")
-_IBAN = re.compile(r"\b[A-Z]{2}\d{2}(?:[ ]?[A-Z0-9]{2,4}){2,8}\b")
+# IBAN : 2 lettres pays + 2 chiffres de controle + 11 a 30 alphanumeriques (espaces
+# de groupage tolerés) => longueur totale 15 a 34, la plage REELLE d'un IBAN.
+# Le motif precedent ({2,4} repete 2 a 8 fois) acceptait des l 8 caracteres et bloquait
+# donc les references produit en majuscules — « OM1993 FINALE », « BR1970 PELE »,
+# « CT7788 ABCD » — soit un faux positif sur le vocabulaire meme de la boutique
+# (observe en production : une question legitime sur une taille refusee au client).
+_IBAN = re.compile(r"\b[A-Z]{2}\d{2}(?:[ ]?[A-Z0-9]){11,30}\b")
 _PASSWORD = re.compile(r"\bmot de passe\b")  # sur texte normalisé
 
 
@@ -199,10 +215,11 @@ class GuardrailEngine:
             if any(p.search(norm) for p in patterns):
                 return self._block("output", category, "rules")
 
-        # 2e ligne : LLM-juge sur la sortie (fuite reformulée, dérive sémantique).
+        # 2e ligne : LLM-juge sur la sortie (fuite reformulée, dérive sémantique),
+        # RESTREINT aux catégories qui ont un sens pour une réponse (cf. ci-dessus).
         if self.moderator is not None:
             category = self.moderator(text)
-            if category:
+            if category in _OUTPUT_MODERATOR_CATEGORIES:
                 return self._block("output", category, "moderator")
 
         return Decision(allowed=True, action="allow")

@@ -17,7 +17,14 @@ from .memory import MemoryManager
 
 SYSTEM_PROMPT = (
     "Tu es l'assistant de support de Velmo, boutique de maillots de foot collector. "
-    "Tu traites la gestion de commandes de niveau 1 avec courtoisie et précision."
+    "Tu traites la gestion de commandes de niveau 1 avec courtoisie et précision.\n"
+    "Règles impératives :\n"
+    "- Quand des extraits FAQ te sont fournis, réponds UNIQUEMENT à partir d'eux et cite "
+    "leur source (le nom du fichier).\n"
+    "- N'invente JAMAIS une procédure, un délai, un montant ou une condition qui n'y "
+    "figure pas. Si l'information manque, dis-le clairement et propose de transmettre "
+    "la demande à un conseiller.\n"
+    "- Utilise les informations mémorisées sur le client quand elles sont pertinentes."
 )
 
 DEFAULT_REFUSAL = (
@@ -74,8 +81,11 @@ class Agent:
             self.memory.write(user_id, message, refusal)
             return refusal
 
-        self.memory.read(user_id, message)
-        answer = self._handle(user_id, message)
+        # Le contexte mémoire est LU **et transmis** au routage : sans ça l'agent
+        # disposait d'une mémoire parfaitement alimentée mais n'y accédait jamais pour
+        # répondre (amnésie en conversation, révélée par le test de bout en bout).
+        context = self.memory.read(user_id, message)
+        answer = self._handle(user_id, message, context)
 
         gate_out = self.guardrails.check_output(answer)
         if not gate_out.allowed:
@@ -86,7 +96,7 @@ class Agent:
 
     # --- routage déterministe ------------------------------------------------
 
-    def _handle(self, user_id: str, message: str) -> str:
+    def _handle(self, user_id: str, message: str, context=None) -> str:
         low = message.lower()
         order = ORDER_RE.search(message)
         order_id = order.group(0) if order else None
@@ -135,7 +145,26 @@ class Agent:
         if any(k in low for k in _FAQ_KEYWORDS):
             return self._format_kb(tools.search_kb(self.kb, message))
 
-        return self.llm.invoke(SYSTEM_PROMPT, "", message)
+        # Repli conversationnel = mémoire + RAG.
+        #
+        # Le routage par mots-clés ci-dessus ne peut pas couvrir toutes les paraphrases
+        # (« comment retourner un maillot » ne matchait aucun mot-clé) : la question
+        # partait alors au LLM SANS la base de connaissances, et il INVENTAIT une
+        # procédure. On récupère donc systématiquement la FAQ ici et on ancre la réponse
+        # dessus — le prompt système interdit d'inventer hors de ces extraits.
+        parts: list[str] = []
+        if context is not None:
+            rendered = context.render()
+            if rendered:
+                parts.append(rendered)
+        if self.kb is not None:
+            hits = tools.search_kb(self.kb, message)
+            if hits.get("found"):
+                parts.append("\n".join(
+                    f"[FAQ source={h['source']}] {h['snippet']}"
+                    for h in hits["results"][:3]
+                ))
+        return self.llm.invoke(SYSTEM_PROMPT, "\n\n".join(parts), message)
 
     def _confirm_or_act(self, confirmed: bool, label: str, order_id: str, action) -> str:
         if not confirmed:
