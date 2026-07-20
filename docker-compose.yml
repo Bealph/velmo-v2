@@ -22,12 +22,16 @@ services:
     ports:
       - "5432:5432"
     volumes:
-      - .docker-data/postgres:/var/lib/postgresql/data
+      # Volume Docker NOMME (et non un bind mount dans le repo) : le repertoire de
+      # donnees PostgreSQL ne doit pas vivre dans un dossier synchronise (OneDrive) —
+      # la synchro concurrente interrompait l'initialisation du cluster (base jamais
+      # creee, pg_hba incomplet). Ici les donnees vivent dans la VM Docker.
+      - pgdata:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U app -d velmo"]
       interval: 5s
       timeout: 5s
-      retries: 10
+      retries: 20   # la toute premiere initialisation peut depasser 50 s
 
   chroma:
     image: chromadb/chroma:latest
@@ -35,3 +39,6 @@ services:
       - "8001:8000"
     volumes:
       - .docker-data/chroma:/chroma/chroma
+
+volumes:
+  pgdata:   # donnees PostgreSQL, hors du repo et hors OneDrive
