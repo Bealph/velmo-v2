@@ -49,14 +49,41 @@ jobs:
           name: quality-report
           path: mlops/report.md
 
-      # 4. Versionnage — SEULEMENT sur un tag : commit-back de scores.jsonl (D31)
-      - name: Versionnage (ledger commit-back)
+      # 4. Versionnage — SEULEMENT sur un tag : ledger sur branche dédiée (D31 révisé)
+      #
+      # Le ledger ne va PAS sur `main` : `main` exige un check `quality-gate` vert, et le
+      # commit du bot n'en a pas → « GH006: protected branch update failed ». Les deux
+      # décisions (commit-back D31 et protection de branche) étaient incompatibles.
+      # Un historique de notes n'est de toute façon pas du code source : il vit sur sa
+      # propre branche, non protégée. Git reste la source de vérité (intention de D31),
+      # et `main` reste inviolable.
+      #
+      # Point d'attention : l'arbre du tag ne contient PAS scores.jsonl (on ne pousse
+      # jamais sur main). Sans récupérer d'abord le ledger existant, chaque version
+      # repartirait d'un fichier vide — un « historique » d'une seule ligne.
+      - name: Versionnage (ledger sur branche dediee)
         if: startsWith(github.ref, 'refs/tags/v')
         run: |
-          uv run python -m velmo.mlops.ledger append results/scores.json \
-            --version "${{ github.ref_name }}" --commit "${{ github.sha }}"
+          set -e
           git config user.name  "velmo-ci[bot]"
           git config user.email "ci@velmo.local"
+
+          # a) récupérer le ledger cumulé, s'il existe déjà
+          git fetch origin mlops-ledger || true
+          git checkout origin/mlops-ledger -- mlops/scores.jsonl 2>/dev/null || true
+
+          # b) ajouter la ligne de cette version (code du tag, donc à jour)
+          uv run python -m velmo.mlops.ledger append results/scores.json \
+            --version "${{ github.ref_name }}" --commit "${{ github.sha }}"
+          cp mlops/scores.jsonl "$RUNNER_TEMP/scores.jsonl"
+
+          # c) publier sur la branche ledger, en CHAÎNANT son historique (pas de force)
+          if git rev-parse --verify origin/mlops-ledger >/dev/null 2>&1; then
+            git checkout -f -B mlops-ledger origin/mlops-ledger
+          else
+            git checkout -f -B mlops-ledger
+          fi
+          mkdir -p mlops && cp "$RUNNER_TEMP/scores.jsonl" mlops/scores.jsonl
           git add mlops/scores.jsonl
           git commit -m "chore(mlops): note ${{ github.ref_name }} [skip ci]"
-          git push origin HEAD:main
+          git push origin mlops-ledger
