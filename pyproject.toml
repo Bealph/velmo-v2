@@ -30,6 +30,9 @@ llm = [
 demo = [
     "streamlit>=1.37,<2",
 ]
+obs = [
+    "langfuse>=4.14.1",
+]
 
 [dependency-groups]
 dev = [
