@@ -181,10 +181,16 @@ def run_eval(agent: Evaluable) -> Scores:
     Toutes les notes sont des FRACTIONS [0,1] (l'unité canonique ; le /100 n'existe
     qu'à l'affichage/CLI).
     """
-    memory = _eval_memory(agent)
-    block_rate, fp_rate = _eval_guardrails(agent)
+    from velmo import observability as obs
+
+    # Les tours rejoués ici sont HORS-LIGNE (EchoLLM, ~20 ms) : mélangés aux vraies
+    # conversations (~5 000 ms), ils rendraient toute p50 de production fausse. On les
+    # isole dans l'environnement `eval` — la production reste mesurable (D44).
+    with obs.environment("eval"):
+        memory = _eval_memory(agent)
+        block_rate, fp_rate = _eval_guardrails(agent)
+        quality, latency_ms, cost = _eval_quality(agent)
     guardrails = (block_rate + (1.0 - fp_rate)) / 2.0
-    quality, latency_ms, cost = _eval_quality(agent)
 
     global_ = 0.40 * memory + 0.40 * guardrails + 0.20 * quality
 

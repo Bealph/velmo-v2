@@ -202,7 +202,16 @@ class GuardrailEngine:
     # ------------------------------------------------------------------ #
     # Garde-fou de SORTIE
     # ------------------------------------------------------------------ #
-    def check_output(self, text: str) -> Decision:
+    def check_output(self, text: str, *, llm_generated: bool = True, **_: object) -> Decision:
+        """Contrôle une réponse avant envoi au client.
+
+        `llm_generated=False` saute la 2e ligne (LLM-juge) : quand la réponse vient d'un
+        OUTIL métier ou d'un extrait de FAQ, c'est un texte que NOUS avons écrit, pas une
+        production du modèle — le faire juger par un LLM coûtait ~1 s et un appel par tour
+        pour un risque nul (observé en trace : la fiche `frais-de-port.md` envoyée au juge).
+        La 1re ligne regex, elle, s'applique TOUJOURS : elle est gratuite et reste utile si
+        un outil venait à renvoyer une donnée sensible.
+        """
         norm = _normalize(text)
 
         # PII à formats fixes — IBAN AVANT carte (l'IBAN contient 16 chiffres en blocs
@@ -216,8 +225,9 @@ class GuardrailEngine:
                 return self._block("output", category, "rules")
 
         # 2e ligne : LLM-juge sur la sortie (fuite reformulée, dérive sémantique),
-        # RESTREINT aux catégories qui ont un sens pour une réponse (cf. ci-dessus).
-        if self.moderator is not None:
+        # RESTREINT aux catégories qui ont un sens pour une réponse (cf. ci-dessus)
+        # et au contenu réellement GÉNÉRÉ par le modèle.
+        if llm_generated and self.moderator is not None:
             category = self.moderator(text)
             if category in _OUTPUT_MODERATOR_CATEGORIES:
                 return self._block("output", category, "moderator")
