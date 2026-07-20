@@ -70,8 +70,18 @@ def get_llm() -> LLM:
         return EchoLLM()
 
     enable_os_truststore()
-    from openai import OpenAI
+
+    # Observabilité OPTIONNELLE : si Langfuse est configuré, on passe par SON client
+    # OpenAI, qui capture automatiquement chaque appel comme une `generation` (modèle,
+    # tokens, latence, coût). Sinon, client standard — la CI reste ainsi hors-ligne et
+    # déterministe, sans aucune dépendance à un service tiers (décision d'architecture :
+    # l'observabilité ne doit jamais se trouver sur le chemin critique de la porte qualité).
+    if os.getenv("LANGFUSE_PUBLIC_KEY"):
+        from langfuse.openai import OpenAI
+    else:
+        from openai import OpenAI
 
     client = OpenAI(base_url=endpoint, api_key=os.environ["AZURE_AI_INFERENCE_API_KEY"])
-    model = os.environ.get("AZURE_AI_INFERENCE_MODEL", "grok-4.3")
+    # Défaut aligné sur un modèle réellement déployé (grok-4.3 ne l'est plus).
+    model = os.environ.get("AZURE_AI_INFERENCE_MODEL", "gpt-5.6-terra")
     return AzureLLM(client, model)
