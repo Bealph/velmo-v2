@@ -49,13 +49,15 @@ def get_agent():
 
 
 @st.cache_data(show_spinner=False)
-def list_customers() -> list[tuple[str, str]]:
-    """(id, nom) des clients en base — la liste des identités « authentifiables »."""
+def list_customers() -> list[tuple[str, str, str]]:
+    """(id, nom, segment) des clients en base — les identités « authentifiables »."""
     from velmo.db import Customer
     from velmo.tools._common import select
 
-    rows = get_agent().session.execute(select(Customer.id, Customer.name)).all()
-    return [(r[0], r[1]) for r in rows]
+    rows = get_agent().session.execute(
+        select(Customer.id, Customer.full_name, Customer.segment)
+    ).all()
+    return [(r[0], r[1], getattr(r[2], "value", str(r[2]))) for r in rows]
 
 
 agent = get_agent()
@@ -66,7 +68,9 @@ customers = list_customers()
 # =========================================================================== #
 with st.sidebar:
     st.header("🎛️ Session")
-    labels = {cid: f"{name} ({cid})" for cid, name in customers} or {"C-marc-dubois": "C-marc-dubois"}
+    labels = {cid: f"{name} — {seg}" for cid, name, seg in customers}
+    if not labels:  # base non seedée : on garde l'appli utilisable
+        labels = {"C-marc-dubois": "C-marc-dubois"}
     ids = list(labels)
     user_id = st.selectbox(
         "Client authentifié", ids, format_func=lambda c: labels[c],
