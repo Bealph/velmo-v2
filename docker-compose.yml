@@ -34,7 +34,11 @@ services:
       retries: 20   # la toute premiere initialisation peut depasser 50 s
 
   chroma:
-    image: chromadb/chroma:latest
+    # Version EPINGLEE, alignee sur le client declare dans pyproject (chromadb>=0.5,<0.6).
+    # Avec `latest`, le serveur passait en version majeure superieure et son schema de
+    # configuration de collection devenait illisible par le client -> KeyError: '_type'.
+    # Un tag flottant casse la stack sans qu'on ait rien change dans le projet.
+    image: chromadb/chroma:0.5.23
     ports:
       - "8001:8000"
     volumes:
