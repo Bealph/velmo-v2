@@ -42,11 +42,31 @@ def main() -> None:
     parser.add_argument("--out", type=Path, default=Path("results/scores.json"))
     args = parser.parse_args()
 
+    # Charge .env UNIQUEMENT pour l'observabilité : l'agent évalué reste construit
+    # explicitement hors-ligne (EchoLLM + SQLite + LocalKB), donc l'éval ne dépend
+    # d'aucune de ces variables. En CI il n'y a pas de .env → sans effet.
+    try:
+        from dotenv import load_dotenv
+
+        load_dotenv()
+    except Exception:
+        pass
+
     scores = run_eval(build_eval_agent())
     args.out.parent.mkdir(parents=True, exist_ok=True)
-    payload = scores_to_dict(scores, version=current_version())
+    version = current_version()
+    payload = scores_to_dict(scores, version=version)
     args.out.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
-    print(f"eval OK -> {args.out}  (global={scores.global_ * 100:.0f}/100)")
+
+    # Publication vers l'observabilité SI configurée (no-op en CI) : les notes rejoignent
+    # la latence et le coût dans le même outil, au lieu de vivre dans deux histoires
+    # séparées. Le verdict de livraison, lui, reste calculé localement par `mlops.score`.
+    from velmo import observability as obs
+
+    obs.eval_run(version, {k: v for k, v in payload.items() if isinstance(v, (int, float))})
+
+    print(f"eval OK -> {args.out}  (global={scores.global_ * 100:.0f}/100)"
+          + ("  [notes publiees vers Langfuse]" if obs.enabled() else ""))
 
 
 if __name__ == "__main__":

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import re
 
+from . import observability as obs
 from . import tools
 from .guardrails import GuardrailEngine
 from .llm import LLM, get_llm
@@ -95,9 +96,21 @@ class Agent:
         self._pending: dict[str, tuple] = {}
 
     def respond(self, user_id: str, message: str) -> str:
+        """Un tour complet. Le corps est instrumenté : chaque `obs.step` ENVELOPPE le
+        travail qu'il mesure (un span posé après coup afficherait 0 ms)."""
+        with obs.turn("velmo.respond", user_id=user_id,
+                      session_id=getattr(self.memory, "session_id", "-"), input=message):
+            answer = self._respond(user_id, message)
+            obs.update(output=answer, metadata=self.last_trace)
+            obs.score("route", self.last_trace.get("route", "?"))
+            return answer
+
+    def _respond(self, user_id: str, message: str) -> str:
         self.last_trace = {"route": "outil", "kb_sources": [], "input": "allow", "output": "allow"}
 
-        gate_in = self.guardrails.check_input(message)
+        with obs.step("garde-fou entrée", "guardrail", input=message):
+            gate_in = self.guardrails.check_input(message)
+            obs.update(output={"action": gate_in.action, "categorie": gate_in.category})
         if not gate_in.allowed:
             self.last_trace["input"] = f"block:{gate_in.category}"
             self.last_trace["route"] = "refus (entrée)"
@@ -108,27 +121,35 @@ class Agent:
         # Le contexte mémoire est LU **et transmis** au routage : sans ça l'agent
         # disposait d'une mémoire parfaitement alimentée mais n'y accédait jamais pour
         # répondre (amnésie en conversation, révélée par le test de bout en bout).
-        context = self.memory.read(user_id, message)
+        with obs.step("lecture mémoire", "retriever", input=message):
+            context = self.memory.read(user_id, message)
+            obs.update(output={"faits": context.facts, "tours_historique": len(context.history)})
 
         # FAIL-SAFE : une panne d'une dépendance externe (500 du fournisseur LLM, base
         # momentanément injoignable) ne doit JAMAIS tuer la conversation. Le LLM-juge est
         # déjà en fail-open ; l'appel principal ne l'était pas, et une erreur 500 d'Azure
         # remontait jusqu'en haut = session terminée. On dégrade poliment, on trace la
         # cause, et le client garde un interlocuteur.
-        try:
-            answer = self._handle(user_id, message, context)
-        except Exception as exc:  # noqa: BLE001 - on refuse de propager quoi que ce soit
-            self.last_trace["route"] = "erreur technique"
-            self.last_trace["error"] = f"{type(exc).__name__}: {exc}"
-            answer = TECHNICAL_FALLBACK
+        with obs.step("routage", "chain", input=message):
+            try:
+                answer = self._handle(user_id, message, context)
+            except Exception as exc:  # noqa: BLE001 - on refuse de propager quoi que ce soit
+                self.last_trace["route"] = "erreur technique"
+                self.last_trace["error"] = f"{type(exc).__name__}: {exc}"
+                answer = TECHNICAL_FALLBACK
+            obs.update(output=answer, metadata={"route": self.last_trace["route"],
+                                                "kb_sources": self.last_trace["kb_sources"]})
 
-        gate_out = self.guardrails.check_output(answer)
+        with obs.step("garde-fou sortie", "guardrail", input=answer):
+            gate_out = self.guardrails.check_output(answer)
+            obs.update(output={"action": gate_out.action, "categorie": gate_out.category})
         if not gate_out.allowed:
             self.last_trace["output"] = f"block:{gate_out.category}"
             self.last_trace["route"] = "refus (sortie)"
             answer = gate_out.refusal or DEFAULT_REFUSAL
 
-        self.memory.write(user_id, message, answer)
+        with obs.step("écriture mémoire", "span"):
+            self.memory.write(user_id, message, answer)
         return answer
 
     # --- routage déterministe ------------------------------------------------
