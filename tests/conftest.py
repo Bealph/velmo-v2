@@ -35,10 +35,12 @@ class AllowAllGuardrails:
     def __init__(self) -> None:
         self.events: list[dict] = []
 
-    def check_input(self, message: str) -> Decision:
+    def check_input(self, message: str, **_) -> Decision:
         return Decision(allowed=True, action="allow")
 
-    def check_output(self, text: str) -> Decision:
+    # `**_` : suit l'interface de GuardrailEngine, qui accepte désormais `llm_generated`
+    # (le LLM-juge de sortie ne s'applique qu'au contenu généré par le modèle).
+    def check_output(self, text: str, **_) -> Decision:
         return Decision(allowed=True, action="allow")
 
 

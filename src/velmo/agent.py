@@ -140,9 +140,14 @@ class Agent:
             obs.update(output=answer, metadata={"route": self.last_trace["route"],
                                                 "kb_sources": self.last_trace["kb_sources"]})
 
+        # Seule la route « llm + rag » produit du texte écrit par le MODÈLE. Les routes
+        # outil/faq/refus renvoient nos propres chaînes : inutile d'y dépêcher le LLM-juge
+        # (~1 s par tour observée en trace). La 1re ligne regex, elle, s'applique toujours.
+        genere_par_llm = self.last_trace["route"] == "llm + rag"
         with obs.step("garde-fou sortie", "guardrail", input=answer):
-            gate_out = self.guardrails.check_output(answer)
-            obs.update(output={"action": gate_out.action, "categorie": gate_out.category})
+            gate_out = self.guardrails.check_output(answer, llm_generated=genere_par_llm)
+            obs.update(output={"action": gate_out.action, "categorie": gate_out.category,
+                               "juge_consulte": genere_par_llm})
         if not gate_out.allowed:
             self.last_trace["output"] = f"block:{gate_out.category}"
             self.last_trace["route"] = "refus (sortie)"
