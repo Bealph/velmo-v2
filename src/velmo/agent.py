@@ -32,6 +32,14 @@ DEFAULT_REFUSAL = (
     "pour vos commandes, livraisons, retours et la FAQ Velmo."
 )
 
+# Repli en cas de panne d'une dépendance externe : on reste poli et honnête, sans
+# jamais exposer la cause technique au client (ni au journal côté client).
+TECHNICAL_FALLBACK = (
+    "Je rencontre momentanément un problème technique et ne peux pas traiter votre "
+    "demande à l'instant. Pouvez-vous reformuler dans un instant ? Si cela persiste, "
+    "je transmets votre demande à un conseiller."
+)
+
 ORDER_RE = re.compile(r"O-\d{4}-\d{4}")
 SIZE_RE = re.compile(r"\b(XXL|XL|S|M|L)\b")
 AMOUNT_RE = re.compile(r"(\d+(?:[.,]\d+)?)\s*(?:€|euros?)")
@@ -78,6 +86,13 @@ class Agent:
         # panneau « coulisses » de l'interface, et base de l'export vers un collecteur
         # de traces. Sans ça, l'extérieur ne peut que deviner (et se tromper).
         self.last_trace: dict = {}
+        # Action sensible en attente de confirmation, PAR CLIENT : {user_id: (label,
+        # order_id, action)}. Indispensable car l'agent invite à répondre « je confirme »,
+        # or ce message ne contient aucun numéro de commande — sans mémoire de l'action
+        # en cours, la confirmation ne pouvait aboutir et l'agent promettait un geste
+        # qu'il n'exécutait jamais. Cloisonné par user_id : la confirmation d'un client
+        # ne peut pas déclencher l'action d'un autre (R3).
+        self._pending: dict[str, tuple] = {}
 
     def respond(self, user_id: str, message: str) -> str:
         self.last_trace = {"route": "outil", "kb_sources": [], "input": "allow", "output": "allow"}
@@ -94,7 +109,18 @@ class Agent:
         # disposait d'une mémoire parfaitement alimentée mais n'y accédait jamais pour
         # répondre (amnésie en conversation, révélée par le test de bout en bout).
         context = self.memory.read(user_id, message)
-        answer = self._handle(user_id, message, context)
+
+        # FAIL-SAFE : une panne d'une dépendance externe (500 du fournisseur LLM, base
+        # momentanément injoignable) ne doit JAMAIS tuer la conversation. Le LLM-juge est
+        # déjà en fail-open ; l'appel principal ne l'était pas, et une erreur 500 d'Azure
+        # remontait jusqu'en haut = session terminée. On dégrade poliment, on trace la
+        # cause, et le client garde un interlocuteur.
+        try:
+            answer = self._handle(user_id, message, context)
+        except Exception as exc:  # noqa: BLE001 - on refuse de propager quoi que ce soit
+            self.last_trace["route"] = "erreur technique"
+            self.last_trace["error"] = f"{type(exc).__name__}: {exc}"
+            answer = TECHNICAL_FALLBACK
 
         gate_out = self.guardrails.check_output(answer)
         if not gate_out.allowed:
@@ -113,14 +139,23 @@ class Agent:
         order_id = order.group(0) if order else None
         confirmed = any(c in low for c in _CONFIRM)
 
+        # « je confirme » SEUL : le message ne porte pas de numéro de commande, on
+        # exécute donc l'action mise en attente au tour précédent pour CE client.
+        if confirmed and order_id is None:
+            pending = self._pending.pop(user_id, None)
+            if pending is not None:
+                label, pending_order, action = pending
+                self.last_trace["route"] = "outil (confirmation)"
+                return self._run_action(pending_order, action)
+
         if order_id and "annul" in low:
             return self._confirm_or_act(
-                confirmed, "annuler", order_id,
+                user_id, confirmed, "annuler", order_id,
                 lambda: tools.cancel_order(self.session, order_id, user_id),
             )
         if order_id and "adresse" in low:
             return self._confirm_or_act(
-                confirmed, "modifier l'adresse de", order_id,
+                user_id, confirmed, "modifier l'adresse de", order_id,
                 lambda: tools.update_shipping_address(
                     self.session, order_id, user_id, {"line1": "(à préciser)"}
                 ),
@@ -129,19 +164,19 @@ class Agent:
             size = SIZE_RE.search(message)
             new_size = size.group(1) if size else "M"
             return self._confirm_or_act(
-                confirmed, f"changer la taille (vers {new_size}) de", order_id,
+                user_id, confirmed, f"changer la taille (vers {new_size}) de", order_id,
                 lambda: tools.update_order_item(self.session, order_id, user_id, new_size),
             )
         if order_id and any(w in low for w in ("retour", "échange", "echange", "renvoyer")):
             return self._confirm_or_act(
-                confirmed, "ouvrir un retour pour", order_id,
+                user_id, confirmed, "ouvrir un retour pour", order_id,
                 lambda: tools.create_return(self.session, order_id, user_id, "Demande client"),
             )
         if order_id and "rembours" in low:
             amount_match = AMOUNT_RE.search(message)
             amount = float(amount_match.group(1).replace(",", ".")) if amount_match else 0.0
             return self._confirm_or_act(
-                confirmed, f"rembourser {amount:.0f}€ sur", order_id,
+                user_id, confirmed, f"rembourser {amount:.0f}€ sur", order_id,
                 lambda: tools.trigger_refund(self.session, order_id, user_id, amount, "Demande client"),
             )
 
@@ -182,12 +217,21 @@ class Agent:
                 ))
         return self.llm.invoke(SYSTEM_PROMPT, "\n\n".join(parts), message)
 
-    def _confirm_or_act(self, confirmed: bool, label: str, order_id: str, action) -> str:
+    def _confirm_or_act(self, user_id: str, confirmed: bool, label: str, order_id: str, action) -> str:
         if not confirmed:
+            # On MÉMORISE l'action : le « je confirme » du tour suivant n'aura pas de
+            # numéro de commande. Une nouvelle demande écrase la précédente, donc on ne
+            # peut pas confirmer par erreur une action abandonnée.
+            self._pending[user_id] = (label, order_id, action)
             return (
                 f"Pour {label} la commande {order_id}, pouvez-vous confirmer ? "
                 "Répondez « je confirme »."
             )
+        self._pending.pop(user_id, None)  # confirmation explicite : plus rien en attente
+        return self._run_action(order_id, action)
+
+    def _run_action(self, order_id: str, action) -> str:
+        """Exécute l'action métier et met en mots son résultat (succès / escalade / erreur)."""
         result = action()
         if result.get("error"):
             return f"Je ne trouve pas la commande {order_id} à votre nom."
