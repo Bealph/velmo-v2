@@ -6,23 +6,32 @@ Nécessite l'extra `vector` (chromadb + sentence-transformers) et un service Chr
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
+
+from dotenv import load_dotenv
 
 KB_DOCS_DIR = Path(__file__).resolve().parent.parent / "kb" / "docs"
 
 
 def main() -> None:
-    import chromadb
-    from chromadb.utils import embedding_functions
+    # Même source de vérité que l'agent : l'hôte/port viennent de CHROMA_URL
+    # (avant, ce script lisait CHROMA_HOST/CHROMA_PORT — une seconde façon de
+    # configurer le même service, donc une seconde façon de se tromper).
+    load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
-    client = chromadb.HttpClient(
-        host=os.getenv("CHROMA_HOST", "chroma"), port=int(os.getenv("CHROMA_PORT", "8000"))
-    )
-    embedder = embedding_functions.SentenceTransformerEmbeddingFunction(
-        model_name=os.getenv("EMBEDDING_MODEL", "intfloat/multilingual-e5-small")
-    )
-    collection = client.get_or_create_collection("velmo_faq", embedding_function=embedder)
+    # Le téléchargement du modèle d'embeddings passe par HTTPS vers huggingface.co.
+    # Derrière un antivirus/proxy qui inspecte le TLS, le CA racine est dans le magasin
+    # Windows mais absent du bundle certifi -> CERTIFICATE_VERIFY_FAILED. Même remède
+    # que pour le client LLM : faire confiance au magasin de l'OS.
+    from velmo.llm import enable_os_truststore
+
+    enable_os_truststore()
+
+    from velmo.kb_store import chroma_collection, chroma_endpoint
+
+    host, port, _ = chroma_endpoint()
+    print(f"Chroma : {host}:{port}")
+    collection = chroma_collection()
 
     docs, ids, metas = [], [], []
     for path in sorted(KB_DOCS_DIR.glob("*.md")):

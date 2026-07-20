@@ -241,6 +241,16 @@ def build_default_agent(session=None, kb=None) -> Agent:
     from .db import session_factory
     from .guardrails.moderator import get_moderator
     from .kb_store import get_kb
+    from .llm import enable_os_truststore
+
+    # AVANT toute construction : le chargement du modele d'embeddings (get_kb) fait des
+    # appels HTTPS vers huggingface.co. Derriere un antivirus/proxy qui inspecte le TLS,
+    # sans le magasin de certificats de l'OS c'est CERTIFICATE_VERIFY_FAILED — et
+    # sentence-transformers fabrique alors un modele de repli au pooling different, donc
+    # des embeddings de requete incompatibles avec ceux de l'ingestion (recuperation
+    # silencieusement degradee). Le truststore etait injecte dans get_llm(), appele APRES
+    # get_kb() : trop tard.
+    enable_os_truststore()
 
     if session is None:
         session = session_factory()()
