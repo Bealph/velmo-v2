@@ -21,6 +21,11 @@ seed-kb:
 chat:
 	uv run python -m velmo.cli
 
+# Interface web : chat client + panneau « coulisses » (memoire, garde-fous, sources RAG).
+# `python -m streamlit` contourne un streamlit.exe bloque par l'antivirus.
+chat-ui:
+	uv run python -m streamlit run scripts/chat_app.py
+
 eval:
 	uv run python -m velmo.mlops.score
 
