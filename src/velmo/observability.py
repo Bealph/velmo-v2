@@ -17,6 +17,17 @@ from contextlib import contextmanager
 from typing import Any, Iterator
 
 
+# URL de la DERNIÈRE trace ouverte. `get_trace_url()` n'est valable qu'à l'intérieur du
+# contexte de trace ; comme `Agent.respond` ouvre et referme ce contexte lui-même, un
+# appelant (script, interface) n'a aucun moyen de la récupérer après coup. On la retient.
+_last_trace_url: str | None = None
+
+
+def last_trace_url() -> str | None:
+    """URL Langfuse du dernier tour tracé, ou `None` si l'observabilité est inactive."""
+    return _last_trace_url
+
+
 def _client():
     """Client Langfuse si configuré ET importable, sinon `None` (jamais d'exception)."""
     if not os.getenv("LANGFUSE_PUBLIC_KEY"):
@@ -58,8 +69,13 @@ def turn(name: str, *, user_id: str, session_id: str, input: Any) -> Iterator[No
         yield
         return
 
+    global _last_trace_url
     observation, attributes = contexts
     with observation, attributes:    # les erreurs du CORPS remontent normalement
+        try:
+            _last_trace_url = lf.get_trace_url()
+        except Exception:
+            _last_trace_url = None
         yield
 
 
