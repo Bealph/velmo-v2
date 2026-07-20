@@ -17,6 +17,36 @@ from contextlib import contextmanager
 from typing import Any, Iterator
 
 
+# URL de la DERNIÈRE trace ouverte. `get_trace_url()` n'est valable qu'à l'intérieur du
+# contexte de trace ; comme `Agent.respond` ouvre et referme ce contexte lui-même, un
+# appelant (script, interface) n'a aucun moyen de la récupérer après coup. On la retient.
+_last_trace_url: str | None = None
+
+
+def last_trace_url() -> str | None:
+    """URL Langfuse du dernier tour tracé, ou `None` si l'observabilité est inactive."""
+    return _last_trace_url
+
+
+# Environnement courant des traces. Les tours joués par l'ÉVALUATION (hors-ligne,
+# ~20 ms, sans appel réseau) se mélangeaient aux vraies conversations (~5 000 ms) :
+# toute p50 calculée dans Langfuse en devenait faussement optimiste. Langfuse sépare
+# nativement par `environment` → on marque l'éval, la production reste mesurable.
+_environment: str = "production"
+
+
+@contextmanager
+def environment(name: str) -> Iterator[None]:
+    """Marque toutes les traces ouvertes dans ce contexte comme appartenant à `name`."""
+    global _environment
+    precedent = _environment
+    _environment = name
+    try:
+        yield
+    finally:
+        _environment = precedent
+
+
 def _client():
     """Client Langfuse si configuré ET importable, sinon `None` (jamais d'exception)."""
     if not os.getenv("LANGFUSE_PUBLIC_KEY"):
@@ -49,7 +79,8 @@ def turn(name: str, *, user_id: str, session_id: str, input: Any) -> Iterator[No
 
             contexts = (
                 lf.start_as_current_observation(name=name, as_type="agent", input=input),
-                propagate_attributes(user_id=user_id, session_id=session_id),
+                propagate_attributes(user_id=user_id, session_id=session_id,
+                                     environment=_environment),
             )
         except Exception:
             contexts = None          # mise en place impossible → on trace pas, on continue
@@ -58,8 +89,13 @@ def turn(name: str, *, user_id: str, session_id: str, input: Any) -> Iterator[No
         yield
         return
 
+    global _last_trace_url
     observation, attributes = contexts
     with observation, attributes:    # les erreurs du CORPS remontent normalement
+        try:
+            _last_trace_url = lf.get_trace_url()
+        except Exception:
+            _last_trace_url = None
         yield
 
 
@@ -128,7 +164,8 @@ def eval_run(version: str, scores: dict) -> None:
         with lf.start_as_current_observation(
             name="velmo.eval", as_type="evaluator", input={"version": version}
         ):
-            with propagate_attributes(session_id=f"eval-{version}", tags=["eval"]):
+            with propagate_attributes(session_id=f"eval-{version}", tags=["eval"],
+                                      environment="eval"):
                 for nom, valeur in scores.items():
                     if isinstance(valeur, (int, float)):
                         lf.score_current_trace(name=nom, value=float(valeur), data_type="NUMERIC")
