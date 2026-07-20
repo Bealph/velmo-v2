@@ -73,10 +73,19 @@ class Agent:
         self.guardrails = guardrails
         self.session = session
         self.kb = kb
+        # Trace du DERNIER tour : ce que l'agent a réellement fait (route empruntée,
+        # sources FAQ utilisées, verdicts des garde-fous). Sert à l'observabilité —
+        # panneau « coulisses » de l'interface, et base de l'export vers un collecteur
+        # de traces. Sans ça, l'extérieur ne peut que deviner (et se tromper).
+        self.last_trace: dict = {}
 
     def respond(self, user_id: str, message: str) -> str:
+        self.last_trace = {"route": "outil", "kb_sources": [], "input": "allow", "output": "allow"}
+
         gate_in = self.guardrails.check_input(message)
         if not gate_in.allowed:
+            self.last_trace["input"] = f"block:{gate_in.category}"
+            self.last_trace["route"] = "refus (entrée)"
             refusal = gate_in.refusal or DEFAULT_REFUSAL
             self.memory.write(user_id, message, refusal)
             return refusal
@@ -89,6 +98,8 @@ class Agent:
 
         gate_out = self.guardrails.check_output(answer)
         if not gate_out.allowed:
+            self.last_trace["output"] = f"block:{gate_out.category}"
+            self.last_trace["route"] = "refus (sortie)"
             answer = gate_out.refusal or DEFAULT_REFUSAL
 
         self.memory.write(user_id, message, answer)
@@ -143,7 +154,10 @@ class Agent:
             return self._handle_stock(message, low)
 
         if any(k in low for k in _FAQ_KEYWORDS):
-            return self._format_kb(tools.search_kb(self.kb, message))
+            found = tools.search_kb(self.kb, message)
+            self.last_trace["route"] = "faq (mots-clés)"
+            self.last_trace["kb_sources"] = [h["source"] for h in found.get("results", [])[:3]]
+            return self._format_kb(found)
 
         # Repli conversationnel = mémoire + RAG.
         #
@@ -157,9 +171,11 @@ class Agent:
             rendered = context.render()
             if rendered:
                 parts.append(rendered)
+        self.last_trace["route"] = "llm + rag"
         if self.kb is not None:
             hits = tools.search_kb(self.kb, message)
             if hits.get("found"):
+                self.last_trace["kb_sources"] = [h["source"] for h in hits["results"][:3]]
                 parts.append("\n".join(
                     f"[FAQ source={h['source']}] {h['snippet']}"
                     for h in hits["results"][:3]
