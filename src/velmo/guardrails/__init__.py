@@ -65,10 +65,13 @@ _INPUT_DETECTORS: list[tuple[str, list[re.Pattern[str]]]] = [
         r"\bdeveloper mode\b", r"mode developpeur", r"prompt (systeme|system)",
         r"plus de regles", r"plus aucune regle",
     )),
-    ("hate", _rx(
-        r"sous-etre", r"sous-humain", r"sale race",
-        r"retournez dans votre pays", r"\bhais\b", r"\bhaine\b",
-    )),
+    # === DEMO DE REGRESSION (temporaire) : garde-fou `hate` RETIRE ===
+    # Sert a prouver le test d'acceptance du brief : « une regression fait chuter la
+    # note et bloque la livraison ». Ce commit est revert juste apres la demonstration.
+    # ("hate", _rx(
+    #     r"sous-etre", r"sous-humain", r"sale race",
+    #     r"retournez dans votre pays", r"\bhais\b", r"\bhaine\b",
+    # )),
     ("violence", _rx(
         r"\bfrapper\b", r"\btuer\b", r"faire du mal", r"\bmenace",
     )),
