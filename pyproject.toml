@@ -17,12 +17,21 @@ vector = [
     "chromadb>=0.5,<0.6",
     "sentence-transformers>=3,<4",
 ]
-# LLM via Azure AI Inference (Kimi-K2.6).
+# LLM via Azure AI (endpoint OpenAI-compatible, ex. grok-4.3 / gpt-5.4-mini).
 llm = [
+    "openai>=1.40",
+    "truststore>=0.9",  # confiance au magasin de certifs de l'OS (inspection TLS antivirus/proxy)
     "langchain>=1.2,<2.0",
     "langchain-core>=1.0,<2.0",
     "langchain-azure-ai>=1.0,<2.0",
     "azure-ai-inference>=1.0.0b9",
+]
+# Démo interactive de la mémoire (interface Streamlit).
+demo = [
+    "streamlit>=1.37,<2",
+]
+obs = [
+    "langfuse>=4.14.1",
 ]
 
 [dependency-groups]

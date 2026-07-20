@@ -1,7 +1,15 @@
-.PHONY: install up down migrate seed seed-kb chat eval ci test fmt lint typecheck
+.PHONY: install up down migrate seed seed-kb chat chat-ui eval ci test fmt lint typecheck
+
+# Extras necessaires a l'execution (openai/langchain + streamlit). Sans eux,
+# `uv run` resynchronise l'env et les retire => ModuleNotFoundError.
+# `vector` est exclu : il tire PyTorch (~2.5 Go), voir `make install-vector`.
+RUN := uv run --extra llm --extra demo
 
 install:
-	uv sync
+	uv sync --extra llm --extra demo
+
+install-vector:
+	uv sync --all-extras
 
 up:
 	docker compose up -d
@@ -10,31 +18,36 @@ down:
 	docker compose down
 
 migrate:
-	uv run alembic upgrade head
+	$(RUN) alembic upgrade head
 
 seed:
-	uv run python scripts/seed.py
+	$(RUN) python scripts/seed.py
 
 seed-kb:
-	uv run python scripts/seed_kb.py
+	$(RUN) python scripts/seed_kb.py
 
 chat:
-	uv run python -m velmo.cli
+	$(RUN) python -m velmo.cli
+
+# Interface web : chat client + panneau « coulisses » (memoire, garde-fous, sources RAG).
+# `python -m streamlit` contourne un streamlit.exe bloque par l'antivirus.
+chat-ui:
+	$(RUN) python -m streamlit run scripts/chat_app.py
 
 eval:
-	uv run python -m velmo.mlops.score
+	$(RUN) python -m velmo.mlops.score
 
 ci: test
 
 test:
-	uv run pytest tests/ -v
+	$(RUN) pytest tests/ -v
 
 fmt:
-	uv run ruff format .
-	uv run ruff check --fix .
+	$(RUN) ruff format .
+	$(RUN) ruff check --fix .
 
 lint:
-	uv run ruff check .
+	$(RUN) ruff check .
 
 typecheck:
-	uv run mypy src
+	$(RUN) mypy src
