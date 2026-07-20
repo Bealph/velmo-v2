@@ -1,13 +1,22 @@
 name: quality
 
+# Boucle qualité (dossier 03-mlops.md, D27/D29). L'éval est OFFLINE et déterministe
+# (EchoLLM, temperature 0) → le gate tourne SANS secret. Déclencheurs :
+#   - push feat/** | feature/**  : feedback rapide, NON bloquant pour la livraison
+#   - pull_request vers main     : LA porte de livraison, BLOQUANTE (seuil + planchers)
+#   - tag v*                     : une VERSION → éval + ledger commit-back (D31)
 on:
   push:
-    branches: [main]
+    branches: ['feat/**', 'feature/**']
+    tags: ['v*']
   pull_request:
+    branches: [main]
 
 jobs:
-  quality:
+  quality-gate:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write   # nécessaire au commit-back du ledger sur un tag
     steps:
       - uses: actions/checkout@v4
 
@@ -20,11 +29,34 @@ jobs:
       - name: Install dependencies
         run: uv sync
 
+      # Garde-fou de non-régression : la suite d'acceptance doit rester verte.
       - name: Acceptance suite
-        run: uv run pytest tests/acceptance/ -v
+        run: uv run pytest tests/acceptance/ -q
 
-      # Note globale bloquante : le script d'évaluation calcule la note et
-      # sort en erreur sous le seuil, ce qui rejette la livraison.
-      # Décommenter une fois `python -m velmo.mlops.score` disponible :
-      # - name: Quality gate
-      #   run: uv run python -m velmo.mlops.score --min-score 0.8
+      # 1. Les 3 suites → notes (JSON déterministe)
+      - name: Eval (3 suites -> scores.json)
+        run: uv run python -m velmo.mlops.eval --out results/scores.json
+
+      # 2. PORTE QUALITÉ : exit 1 si note < seuil OU plancher violé → job rouge = merge bloqué
+      - name: Porte qualite (bloquante)
+        run: uv run python -m velmo.mlops.score results/scores.json --min-global 90
+
+      # 3. Rapport lisible → artefact téléchargeable
+      - name: Generer report.md
+        run: uv run python -m velmo.mlops.report results/scores.json --out mlops/report.md
+      - uses: actions/upload-artifact@v4
+        with:
+          name: quality-report
+          path: mlops/report.md
+
+      # 4. Versionnage — SEULEMENT sur un tag : commit-back de scores.jsonl (D31)
+      - name: Versionnage (ledger commit-back)
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          uv run python -m velmo.mlops.ledger append results/scores.json \
+            --version "${{ github.ref_name }}" --commit "${{ github.sha }}"
+          git config user.name  "velmo-ci[bot]"
+          git config user.email "ci@velmo.local"
+          git add mlops/scores.jsonl
+          git commit -m "chore(mlops): note ${{ github.ref_name }} [skip ci]"
+          git push origin HEAD:main

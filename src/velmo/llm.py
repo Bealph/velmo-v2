@@ -27,9 +27,15 @@ class EchoLLM:
 
 
 class AzureLLM:
-    """Adapte le modèle de chat Azure AI Inference à l'interface `LLM`."""
+    """Adapte un client OpenAI-compatible (Azure AI Foundry) à l'interface `LLM`.
 
-    def __init__(self, model) -> None:
+    L'endpoint Azure expose une API OpenAI-compatible (`/openai/v1`) → on utilise
+    directement le client `openai.OpenAI(base_url=...)`, comme l'exemple officiel de
+    la ressource.
+    """
+
+    def __init__(self, client, model: str) -> None:
+        self._client = client
         self._model = model
 
     def invoke(self, system: str, context: str, message: str) -> str:
@@ -37,19 +43,45 @@ class AzureLLM:
         if context:
             messages.append({"role": "system", "content": f"Mémoire:\n{context}"})
         messages.append({"role": "user", "content": message})
-        return self._model.invoke(messages).content
+        resp = self._client.chat.completions.create(model=self._model, messages=messages)
+        return resp.choices[0].message.content
+
+
+def enable_os_truststore() -> None:
+    """Fait confiance au magasin de certificats de l'OS.
+
+    Utile derrière un antivirus / proxy qui inspecte le HTTPS avec son propre CA racine :
+    ce CA est présent dans le magasin Windows mais absent du bundle certifi qu'utilise
+    httpx → sans ça les appels échouent en CERTIFICATE_VERIFY_FAILED. No-op (sûr) si
+    `truststore` n'est pas installé (on garde alors certifi, correct hors inspection TLS).
+    """
+    try:
+        import truststore
+
+        truststore.inject_into_ssl()
+    except Exception:
+        pass
 
 
 def get_llm() -> LLM:
-    """Construit le client Azure si configuré, sinon le repli `EchoLLM`."""
-    if not os.getenv("AZURE_AI_INFERENCE_ENDPOINT"):
+    """Construit le client Azure (OpenAI-compatible) si configuré, sinon `EchoLLM`."""
+    endpoint = os.getenv("AZURE_AI_INFERENCE_ENDPOINT")
+    if not endpoint:
         return EchoLLM()
 
-    from langchain_azure_ai.chat_models import AzureAIOpenAIApiChatModel
+    enable_os_truststore()
 
-    model = AzureAIOpenAIApiChatModel(
-        endpoint=os.environ["AZURE_AI_INFERENCE_ENDPOINT"],
-        credential=os.environ["AZURE_AI_INFERENCE_API_KEY"],
-        model=os.environ.get("AZURE_AI_INFERENCE_MODEL", "Kimi-K2.6"),
-    )
-    return AzureLLM(model)
+    # Observabilité OPTIONNELLE : si Langfuse est configuré, on passe par SON client
+    # OpenAI, qui capture automatiquement chaque appel comme une `generation` (modèle,
+    # tokens, latence, coût). Sinon, client standard — la CI reste ainsi hors-ligne et
+    # déterministe, sans aucune dépendance à un service tiers (décision d'architecture :
+    # l'observabilité ne doit jamais se trouver sur le chemin critique de la porte qualité).
+    if os.getenv("LANGFUSE_PUBLIC_KEY"):
+        from langfuse.openai import OpenAI
+    else:
+        from openai import OpenAI
+
+    client = OpenAI(base_url=endpoint, api_key=os.environ["AZURE_AI_INFERENCE_API_KEY"])
+    # Défaut aligné sur un modèle réellement déployé (grok-4.3 ne l'est plus).
+    model = os.environ.get("AZURE_AI_INFERENCE_MODEL", "gpt-5.6-terra")
+    return AzureLLM(client, model)

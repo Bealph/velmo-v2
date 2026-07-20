@@ -201,7 +201,19 @@ def _escalations() -> list[Escalation]:
 
 
 def seed(session) -> None:
-    """Insère le jeu de données de référence dans la session fournie."""
+    """Insère le jeu de données de référence dans la session fournie.
+
+    Les lots sont listés dans l'ordre des dépendances (parents avant enfants) et un
+    `flush()` est fait APRÈS CHAQUE LOT pour que cet ordre soit réellement celui des
+    INSERT SQL.
+
+    Pourquoi c'est nécessaire : les modèles déclarent des colonnes `ForeignKey` mais
+    aucune `relationship()`. Or l'unité de travail de SQLAlchemy ordonne les INSERT
+    d'après les relations entre mappers, pas d'après les colonnes FK seules — sans
+    flush, elle insérait `escalations` avant `orders`. Invisible sur SQLite (qui
+    n'applique pas les FK par défaut), mais rejeté par PostgreSQL :
+    « violates foreign key constraint escalations_order_id_fkey ».
+    """
     for batch in (
         _customers(),
         _products(),
@@ -214,4 +226,5 @@ def seed(session) -> None:
         _escalations(),
     ):
         session.add_all(batch)
+        session.flush()  # fige l'ordre des INSERT lot par lot
     session.commit()

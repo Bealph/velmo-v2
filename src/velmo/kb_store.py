@@ -10,6 +10,7 @@ import os
 import re
 import unicodedata
 from pathlib import Path
+from urllib.parse import urlparse
 
 KB_DOCS_DIR = Path(__file__).resolve().parents[2] / "kb" / "docs"
 
@@ -73,19 +74,45 @@ class ChromaKB:
         ]
 
 
-def get_kb():
-    """Renvoie le backend Chroma si configuré et disponible, sinon le backend local."""
-    if not os.getenv("CHROMA_URL"):
-        return LocalKB()
-    try:
-        import chromadb
-        from chromadb.utils import embedding_functions
-    except ImportError:
-        return LocalKB()
+COLLECTION = "velmo_faq"
 
-    client = chromadb.HttpClient(host="chroma", port=8000)
+
+def chroma_endpoint() -> tuple[str, int, bool]:
+    """(hôte, port, ssl) du service Chroma, DÉDUITS de `CHROMA_URL`.
+
+    Source unique de vérité, partagée par l'agent (`get_kb`) et l'ingestion
+    (`scripts/seed_kb.py`) : le même réglage vaut depuis le réseau Docker
+    (`http://chroma:8000`) et depuis la machine hôte (`http://localhost:8001`).
+    Auparavant chacun codait son propre hôte en dur, avec deux variables
+    d'environnement différentes — donc deux façons de se tromper.
+    """
+    url = os.getenv("CHROMA_URL", "")
+    parsed = urlparse(url if "//" in url else f"//{url}")
+    return (parsed.hostname or "chroma", parsed.port or 8000, parsed.scheme == "https")
+
+
+def chroma_collection():
+    """Collection Chroma prête à l'emploi (embeddings e5). Lève si Chroma est absent."""
+    import chromadb
+    from chromadb.utils import embedding_functions
+
+    host, port, ssl = chroma_endpoint()
+    client = chromadb.HttpClient(host=host, port=port, ssl=ssl)
     embedder = embedding_functions.SentenceTransformerEmbeddingFunction(
         model_name=os.getenv("EMBEDDING_MODEL", "intfloat/multilingual-e5-small")
     )
-    collection = client.get_or_create_collection("velmo_faq", embedding_function=embedder)
-    return ChromaKB(collection)
+    return client.get_or_create_collection(COLLECTION, embedding_function=embedder)
+
+
+def get_kb():
+    """Renvoie le backend Chroma si configuré ET joignable, sinon le backend local.
+
+    Tout échec (dépendance absente, service injoignable, collection illisible) retombe
+    sur `LocalKB` : la FAQ reste disponible hors-ligne plutôt que de casser l'agent.
+    """
+    if not os.getenv("CHROMA_URL"):
+        return LocalKB()
+    try:
+        return ChromaKB(chroma_collection())
+    except Exception:
+        return LocalKB()
