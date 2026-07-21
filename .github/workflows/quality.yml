@@ -33,18 +33,31 @@ jobs:
       - name: Acceptance suite
         run: uv run pytest tests/acceptance/ -q
 
+      # Les 3 étapes de mesure/diagnostic tournent avec `if: always()` : on veut les
+      # signaux qualité ET le rapport MÊME quand l'acceptance échoue — c'est précisément
+      # là qu'ils sont utiles (diagnostiquer POURQUOI). Observé lors de la démo de
+      # régression : la CI virait rouge mais Eval/report étaient sautés, donc aucun
+      # rapport pour comprendre la chute. `always()` ne masque rien : le job reste rouge
+      # si l'acceptance ou la porte a échoué (un seul step rouge suffit à faire échouer
+      # le job). Le Versionnage, lui, garde son `success()` implicite → aucun ledger
+      # publié pour une version cassée.
+
       # 1. Les 3 suites → notes (JSON déterministe)
       - name: Eval (3 suites -> scores.json)
+        if: always()
         run: uv run python -m velmo.mlops.eval --out results/scores.json
 
       # 2. PORTE QUALITÉ : exit 1 si note < seuil OU plancher violé → job rouge = merge bloqué
       - name: Porte qualite (bloquante)
+        if: always()
         run: uv run python -m velmo.mlops.score results/scores.json --min-global 90
 
       # 3. Rapport lisible → artefact téléchargeable
       - name: Generer report.md
+        if: always()
         run: uv run python -m velmo.mlops.report results/scores.json --out mlops/report.md
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: quality-report
           path: mlops/report.md
