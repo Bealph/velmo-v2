@@ -19,3 +19,11 @@ __version__ = "2.0.0"
 from .llm import enable_os_truststore as _enable_os_truststore
 
 _enable_os_truststore()
+
+# Observabilité : on construit le client Langfuse MASQUÉ ici, à l'import du paquet, donc
+# AVANT tout autre usage du SDK (notamment le wrapper langfuse.openai de get_llm). Le
+# premier client construit fixe le masque de la ressource partagée ; un client non masqué
+# créé avant rendrait le masquage PII (D24) inopérant. No-op sans LANGFUSE_PUBLIC_KEY.
+from . import observability as _observability
+
+_observability.init()
