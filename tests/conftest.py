@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -62,6 +63,40 @@ def build_degraded_agent() -> Agent:
         session=seeded_session(),
         kb=LocalKB(),
     )
+
+
+@pytest.fixture(scope="session", autouse=True)
+def stockage_memoire_isole(tmp_path_factory):
+    """Isole le stockage mémoire de la suite, et le protège d'une URL d'environnement.
+
+    Deux effets, tous deux voulus :
+
+      1. les tests n'écrivent plus dans `data/velmo_memory.sqlite`, le fichier de
+         développement, qu'ils polluaient jusqu'ici ;
+      2. une `VELMO_MEMORY_DB_URL` présente dans l'environnement est **neutralisée** le
+         temps de la suite. Sans cette précaution, lancer les tests sur un poste
+         configuré pour le déploiement les ferait écrire dans la base de PRODUCTION —
+         la résolution du store retombant sur l'URL faute de chemin explicite.
+
+    Portée **session** et non fonction : `test_cross_session_persistence` crée plusieurs
+    MemoryManager qui doivent partager le même store, exactement comme en production.
+    Une isolation par test casserait ce qu'on cherche justement à vérifier.
+    """
+    fichier = tmp_path_factory.mktemp("memoire") / "velmo_memory_test.sqlite"
+    anciens = {
+        "VELMO_MEMORY_DB": os.environ.get("VELMO_MEMORY_DB"),
+        "VELMO_MEMORY_DB_URL": os.environ.get("VELMO_MEMORY_DB_URL"),
+    }
+    os.environ["VELMO_MEMORY_DB"] = str(fichier)
+    os.environ.pop("VELMO_MEMORY_DB_URL", None)
+    try:
+        yield fichier
+    finally:
+        for nom, valeur in anciens.items():
+            if valeur is None:
+                os.environ.pop(nom, None)
+            else:
+                os.environ[nom] = valeur
 
 
 @pytest.fixture
