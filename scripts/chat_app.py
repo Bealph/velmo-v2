@@ -24,6 +24,7 @@ d'un client restent invisibles aux autres).
 
 from __future__ import annotations
 
+import os
 import time
 from pathlib import Path
 
@@ -36,6 +37,24 @@ import streamlit as st  # noqa: E402
 from velmo.agent import build_default_agent  # noqa: E402
 
 st.set_page_config(page_title="Velmo 2.0 — Support", page_icon="👕", layout="wide")
+
+# --------------------------------------------------------------------------- #
+# Panneau de démonstration : MASQUÉ par défaut.
+#
+# Le brief de déploiement demande de vérifier qu'aucun secret « ni donnée de
+# configuration » n'est exposé dans les pages de l'application. Or les coulisses
+# affichent le type du client LLM, l'état du garde-fou de 2e ligne, la catégorie de
+# blocage et les faits mémorisés du client : rien de secret, mais des informations
+# internes — et la catégorie de blocage renseigne un visiteur sur les règles.
+#
+# Mais ce panneau est AUSSI ce qui permet de prouver la mémoire et l'effectivité des
+# garde-fous. D'où l'interrupteur plutôt qu'un retrait : par défaut l'application ne
+# montre rien, ce qui est démontrable ; on l'active le temps de la démonstration, ce qui
+# est également démontrable. Les deux propriétés deviennent vraies séparément.
+# --------------------------------------------------------------------------- #
+PANNEAU_DEBUG = os.getenv("VELMO_DEBUG_PANEL", "").strip().lower() in {
+    "1", "true", "yes", "oui",
+}
 
 
 # --------------------------------------------------------------------------- #
@@ -88,13 +107,14 @@ with st.sidebar:
         st.session_state.trace = None
         st.rerun()
 
-    st.divider()
-    st.caption(
-        f"LLM : `{type(agent.llm).__name__}`  \n"
-        f"FAQ : `{type(agent.kb).__name__}`  \n"
-        f"Garde-fou 2ᵉ ligne : "
-        f"`{'actif' if getattr(agent.guardrails, 'moderator', None) else 'inactif'}`"
-    )
+    if PANNEAU_DEBUG:
+        st.divider()
+        st.caption(
+            f"LLM : `{type(agent.llm).__name__}`  \n"
+            f"FAQ : `{type(agent.kb).__name__}`  \n"
+            f"Garde-fou 2ᵉ ligne : "
+            f"`{'actif' if getattr(agent.guardrails, 'moderator', None) else 'inactif'}`"
+        )
 
 st.session_state.setdefault("messages", [])
 st.session_state.setdefault("trace", None)
@@ -102,7 +122,12 @@ st.session_state.setdefault("trace", None)
 # =========================================================================== #
 # CORPS — chat (gauche) + coulisses (droite)
 # =========================================================================== #
-chat_col, back_col = st.columns([3, 2], gap="large")
+# Sans le panneau, la conversation prend toute la largeur : une colonne vide serait
+# le signe visible qu'on cache quelque chose, alors qu'on ne fait que ne rien exposer.
+if PANNEAU_DEBUG:
+    chat_col, back_col = st.columns([3, 2], gap="large")
+else:
+    chat_col, back_col = st.container(), None
 
 with chat_col:
     st.subheader("💬 Support Velmo")
@@ -110,36 +135,37 @@ with chat_col:
         with st.chat_message(role):
             st.markdown(content)
 
-with back_col:
-    st.subheader("🔍 Coulisses du dernier tour")
-    trace = st.session_state.trace
-    if trace is None:
-        st.info("Envoyez un message : le détail de ce que fait l'agent s'affichera ici.")
-    else:
-        gi, go = trace["input"], trace["output"]
-        c1, c2 = st.columns(2)
-        c1.metric("Garde-fou entrée", "✅ passé" if gi == "allow" else "🚫 bloqué")
-        c2.metric("Garde-fou sortie", "✅ passé" if go == "allow" else "🚫 bloqué")
-        for label, verdict in (("entrée", gi), ("sortie", go)):
-            if verdict != "allow":
-                st.error(f"Blocage en {label} — catégorie **{verdict.split(':', 1)[1]}**")
+if back_col is not None:
+    with back_col:
+        st.subheader("🔍 Coulisses du dernier tour")
+        trace = st.session_state.trace
+        if trace is None:
+            st.info("Envoyez un message : le détail de ce que fait l'agent s'affichera ici.")
+        else:
+            gi, go = trace["input"], trace["output"]
+            c1, c2 = st.columns(2)
+            c1.metric("Garde-fou entrée", "✅ passé" if gi == "allow" else "🚫 bloqué")
+            c2.metric("Garde-fou sortie", "✅ passé" if go == "allow" else "🚫 bloqué")
+            for label, verdict in (("entrée", gi), ("sortie", go)):
+                if verdict != "allow":
+                    st.error(f"Blocage en {label} — catégorie **{verdict.split(':', 1)[1]}**")
 
-        st.caption(f"Route : **{trace['route']}** · latence **{trace['latency_ms']:.0f} ms**")
+            st.caption(f"Route : **{trace['route']}** · latence **{trace['latency_ms']:.0f} ms**")
 
-        with st.expander("📚 Sources FAQ citées", expanded=bool(trace["kb_sources"])):
-            if trace["kb_sources"]:
-                for src in trace["kb_sources"]:
-                    st.markdown(f"- `{src}`")
-            else:
-                st.caption("Aucune — ce tour n'a pas consulté la FAQ (outil métier ou refus).")
+            with st.expander("📚 Sources FAQ citées", expanded=bool(trace["kb_sources"])):
+                if trace["kb_sources"]:
+                    for src in trace["kb_sources"]:
+                        st.markdown(f"- `{src}`")
+                else:
+                    st.caption("Aucune — ce tour n'a pas consulté la FAQ (outil métier ou refus).")
 
-        with st.expander("🧠 Mémoire durable du client", expanded=True):
-            facts = trace["facts"]
-            if facts:
-                st.table({"type": list(facts), "valeur": list(facts.values())})
-            else:
-                st.caption("Aucun fait mémorisé pour ce client.")
-            st.caption(f"Isolée par `user_id` = `{trace['user_id']}` (R3).")
+            with st.expander("🧠 Mémoire durable du client", expanded=True):
+                facts = trace["facts"]
+                if facts:
+                    st.table({"type": list(facts), "valeur": list(facts.values())})
+                else:
+                    st.caption("Aucun fait mémorisé pour ce client.")
+                st.caption(f"Isolée par `user_id` = `{trace['user_id']}` (R3).")
 
 # --------------------------------------------------------------------------- #
 # Saisie : un tour = respond() + capture de ce qui s'est passé.
