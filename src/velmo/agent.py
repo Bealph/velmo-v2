@@ -109,7 +109,7 @@ class Agent:
         self.last_trace = {"route": "outil", "kb_sources": [], "input": "allow", "output": "allow"}
 
         with obs.step("garde-fou entrée", "guardrail", input=message):
-            gate_in = self.guardrails.check_input(message)
+            gate_in = self.guardrails.check_input(message, user_id=user_id)
             obs.update(output={"action": gate_in.action, "categorie": gate_in.category})
         if not gate_in.allowed:
             self.last_trace["input"] = f"block:{gate_in.category}"
@@ -145,7 +145,9 @@ class Agent:
         # (~1 s par tour observée en trace). La 1re ligne regex, elle, s'applique toujours.
         genere_par_llm = self.last_trace["route"] == "llm + rag"
         with obs.step("garde-fou sortie", "guardrail", input=answer):
-            gate_out = self.guardrails.check_output(answer, llm_generated=genere_par_llm)
+            gate_out = self.guardrails.check_output(
+                answer, llm_generated=genere_par_llm, user_id=user_id
+            )
             obs.update(output={"action": gate_out.action, "categorie": gate_out.category,
                                "juge_consulte": genere_par_llm})
         if not gate_out.allowed:

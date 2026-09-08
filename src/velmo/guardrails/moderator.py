@@ -73,12 +73,34 @@ class LLMModerator:
             return match.group(1).lower() if match else None
 
 
+def _moderator_active() -> bool:
+    """Le LLM-juge est-il explicitement activé ?
+
+    Interrupteur ajouté pour la mise en ligne, et il corrige un vrai défaut de conception :
+    la 2e ligne s'activait par **effet de bord de la présence d'une clé**. `version.yaml`
+    déclare pourtant `moderator: false`, mais ce fichier ne pilote rien — il ne fait que
+    décrire la version. Or en production l'endpoint et la clé du service d'IA sont
+    indispensables : le juge devenait donc actif sans que personne ne l'ait décidé, et il
+    n'existait aucun moyen de l'en empêcher sans priver l'agent de sa propre clé.
+
+    Conséquence pratique, au-delà de la lisibilité : la configuration en ligne ne dépend
+    plus de la même chose que la configuration testée. Lancer la suite de tests sur un
+    poste où traîne un `.env` ne change plus ce qui est testé.
+
+    Désactivé par défaut, conformément à `version.yaml` et à la décision de déploiement.
+    """
+    return os.getenv("VELMO_MODERATOR", "").strip().lower() in {"1", "true", "yes", "oui"}
+
+
 def get_moderator() -> LLMModerator | None:
-    """Construit le juge si un endpoint + clé sont configurés, sinon `None`.
+    """Construit le juge s'il est activé, ET qu'un endpoint + clé sont configurés.
 
     Utilise les variables dédiées AZURE_JUDGE_* si présentes, sinon retombe sur la
     ressource principale AZURE_AI_INFERENCE_* (juge co-déployé sur la même ressource).
     """
+    if not _moderator_active():
+        return None
+
     endpoint = os.getenv("AZURE_JUDGE_ENDPOINT") or os.getenv("AZURE_AI_INFERENCE_ENDPOINT")
     key = os.getenv("AZURE_JUDGE_API_KEY") or os.getenv("AZURE_AI_INFERENCE_API_KEY")
     if not endpoint or not key:

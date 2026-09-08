@@ -2,13 +2,35 @@
 
 from __future__ import annotations
 
+import os
 import uuid
 
 from sqlalchemy import select
 
 from ..db import Order, OrderStatus
 
-REFUND_CAP = 50.0
+
+def _refund_cap() -> float:
+    """Plafond de remboursement au-delà duquel l'agent escalade vers un humain.
+
+    Le brief de déploiement range les **seuils des garde-fous** parmi les valeurs à
+    externaliser : un plafond métier doit pouvoir être ajusté sans redéployer du code.
+
+    Défaut à 50 € — la valeur historique — afin que rien ne change pour le développement,
+    les tests ni l'évaluation. Une valeur illisible est ignorée plutôt que fatale : un
+    seuil mal saisi dans un paramètre d'application ne doit pas empêcher l'agent de
+    démarrer, il doit le laisser sur son comportement connu.
+    """
+    brut = os.getenv("VELMO_REFUND_CAP")
+    if not brut:
+        return 50.0
+    try:
+        return float(brut.strip().replace(",", "."))
+    except ValueError:
+        return 50.0
+
+
+REFUND_CAP = _refund_cap()
 # Une commande n'est modifiable / annulable que tant qu'elle n'est pas partie.
 MODIFIABLE_STATUSES = {OrderStatus.paid, OrderStatus.prepared}
 RETURNABLE_STATUSES = {OrderStatus.delivered}
