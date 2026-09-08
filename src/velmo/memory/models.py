@@ -124,22 +124,69 @@ def _default_db_path() -> Path:
     return project_root / "data" / "velmo_memory.sqlite"
 
 
-def memory_session_factory(path: str | os.PathLike[str] | None = None) -> sessionmaker:
-    """Crée le fichier SQLite (si absent), les tables, et renvoie un sessionmaker.
+def _memory_db_url() -> str | None:
+    """URL de connexion à un stockage mémoire EXTERNE au système de fichiers.
+
+    Introduite pour la mise en ligne. La mémoire long terme doit survivre au changement
+    de machine (exigence R2), ce qu'un fichier local ne permet pas — c'est précisément le
+    « fichier perdu au changement de poste » que le brief de déploiement demande de
+    remplacer.
+
+    Un fichier ne conviendrait de toute façon pas en ligne : sur App Service, le système
+    de fichiers de l'application est un partage réseau, sur lequel il est impossible
+    d'acquérir un verrou exclusif. La documentation Microsoft écarte explicitement les
+    bases de données fichier pour cette raison, et recommande une base managée.
+    """
+    return os.getenv("VELMO_MEMORY_DB_URL") or None
+
+
+def memory_session_factory(
+    path: str | os.PathLike[str] | None = None,
+    *,
+    url: str | None = None,
+) -> sessionmaker:
+    """Prépare le stockage mémoire (fichier ou base externe) et renvoie un sessionmaker.
+
+    Résolution, du plus explicite au plus implicite :
+
+      1. `path` — un chemin passé par l'appelant l'emporte sur TOUT, y compris sur une
+         URL présente dans l'environnement. **C'est un invariant de sécurité, pas une
+         commodité** : l'évaluation MLOps donne à chaque cas un fichier jetable
+         (`mlops/__init__.py`, `db_path=tempfile.mktemp(...)`) pour les isoler. Si une
+         URL d'environnement primait, chaque cas d'évaluation écrirait dans la base de
+         PRODUCTION — et l'isolation D-isolation #6 tomberait en silence.
+      2. `url` — URL passée par l'appelant.
+      3. env `VELMO_MEMORY_DB_URL` — le mode en ligne (base managée).
+      4. env `VELMO_MEMORY_DB`, sinon `data/velmo_memory.sqlite` — le mode fichier,
+         inchangé, qui reste celui du développement local et des tests.
 
     Args:
-        path: chemin explicite du fichier. Si None → _default_db_path()
-              (env VELMO_MEMORY_DB, sinon data/velmo_memory.sqlite).
+        path: chemin explicite d'un fichier SQLite. Prioritaire (voir 1).
+        url:  URL de connexion SQLAlchemy explicite.
 
     Returns:
         Un sessionmaker lié au moteur. expire_on_commit=False : on garde les attributs
         lisibles après commit / hors session (le memory manager relit un fait juste
         après l'avoir écrit) → pas de DetachedInstanceError.
     """
-    db_path = Path(path) if path is not None else _default_db_path()
-    db_path.parent.mkdir(parents=True, exist_ok=True)  # crée data/ au besoin
+    if path is not None:
+        resolved_url = None  # un chemin explicite l'emporte : voir le point 1 ci-dessus
+    else:
+        resolved_url = url or _memory_db_url()
 
-    engine = create_engine(f"sqlite:///{db_path}")
+    if resolved_url:
+        # pool_pre_ping : une base managée ferme les connexions restées inactives. Sans
+        # cette vérification, le premier message reçu après une accalmie échouerait sur
+        # une connexion morte — un défaut qui n'apparaît jamais en développement.
+        engine = create_engine(resolved_url, pool_pre_ping=True)
+    else:
+        db_path = Path(path) if path is not None else _default_db_path()
+        db_path.parent.mkdir(parents=True, exist_ok=True)  # crée data/ au besoin
+        engine = create_engine(f"sqlite:///{db_path}")
+
+    # Les tables de la mémoire sont créées ici, et non par Alembic : Alembic gère la base
+    # MÉTIER (`DB_URL`), qui est une base distincte. Le schéma mémoire reste donc porté
+    # par le modèle, ce qui vaut aussi bien pour un fichier que pour une base managée.
     MemoryBase.metadata.create_all(engine)
 
     return sessionmaker(bind=engine, expire_on_commit=False)

@@ -17,10 +17,25 @@ Contrats consommés par l'agent et l'acceptance : `Decision`, `GuardrailEngine`,
 
 from __future__ import annotations
 
+import logging
 import re
 import unicodedata
 from dataclasses import dataclass, field
 from typing import Callable
+
+# Journal des blocages, en plus de la liste `events` en mémoire.
+#
+# `events` sert à l'interface et aux tests, mais elle disparaît au redémarrage et
+# n'apparaît nulle part côté hébergeur. Or un blocage doit être CONSTATABLE en
+# exploitation, pas seulement dans le processus qui l'a produit.
+#
+# Niveau WARNING, et ce n'est pas un choix esthétique : sans aucune configuration de
+# journalisation, Python n'émet que les messages de niveau WARNING et au-delà, via son
+# gestionnaire de dernier recours (vers `stderr`). Un `INFO` serait donc silencieux sur un
+# hébergeur qui ne configure rien. Une bibliothèque n'ayant pas à imposer une
+# configuration globale au programme qui l'utilise, on s'aligne sur le niveau qui sort
+# tout seul — et un blocage est de toute façon un événement anormal, donc à sa place ici.
+_LOGGER = logging.getLogger("velmo.guardrails")
 
 # Catégories de contenus contrôlés.
 CATEGORIES = (
@@ -161,17 +176,27 @@ class GuardrailEngine:
     events: list[dict] = field(default_factory=list)
 
     # -- journalisation MASQUÉE (jamais de PII/secret en clair dans les logs) -- #
-    def _log(self, where: str, category: str, method: str) -> None:
+    def _log(self, where: str, category: str, method: str, user_id: str | None = None) -> None:
         self.events.append({
             "where": where,          # "input" | "output"
             "category": category,
             "action": "block",
             "method": method,        # "rules" | "moderator"
+            "user_id": user_id,      # rattache le blocage à une conversation
             "excerpt": "[masqué]" if category in ("pii", "secret_leak") else None,
         })
 
-    def _block(self, where: str, category: str, method: str) -> Decision:
-        self._log(where, category, method)
+        # Le message d'origine n'est JAMAIS journalisé : seuls des métadonnées de
+        # catégorie. C'est ce qui permet de tracer un blocage `pii` ou `secret_leak` sans
+        # recopier dans le journal ce qu'on vient précisément de refuser de laisser passer.
+        _LOGGER.warning(
+            "blocage where=%s category=%s method=%s user=%s",
+            where, category, method, user_id or "inconnu",
+        )
+
+    def _block(self, where: str, category: str, method: str,
+               user_id: str | None = None) -> Decision:
+        self._log(where, category, method, user_id)
         return Decision(
             allowed=False,
             action="block",
@@ -183,26 +208,28 @@ class GuardrailEngine:
     # ------------------------------------------------------------------ #
     # Garde-fou d'ENTRÉE
     # ------------------------------------------------------------------ #
-    def check_input(self, message: str) -> Decision:
+    def check_input(self, message: str, *, user_id: str | None = None,
+                    **_: object) -> Decision:
         norm = _normalize(message)
 
         # 1re ligne : cascade regex par sévérité, premier match = blocage.
         for category, patterns in _INPUT_DETECTORS:
             if any(p.search(norm) for p in patterns):
-                return self._block("input", category, "rules")
+                return self._block("input", category, "rules", user_id)
 
         # 2e ligne : LLM-juge, seulement si injecté et si la 1re ligne a laissé passer.
         if self.moderator is not None:
             category = self.moderator(message)
             if category:
-                return self._block("input", category, "moderator")
+                return self._block("input", category, "moderator", user_id)
 
         return Decision(allowed=True, action="allow")
 
     # ------------------------------------------------------------------ #
     # Garde-fou de SORTIE
     # ------------------------------------------------------------------ #
-    def check_output(self, text: str, *, llm_generated: bool = True, **_: object) -> Decision:
+    def check_output(self, text: str, *, llm_generated: bool = True,
+                     user_id: str | None = None, **_: object) -> Decision:
         """Contrôle une réponse avant envoi au client.
 
         `llm_generated=False` saute la 2e ligne (LLM-juge) : quand la réponse vient d'un
@@ -217,12 +244,12 @@ class GuardrailEngine:
         # PII à formats fixes — IBAN AVANT carte (l'IBAN contient 16 chiffres en blocs
         # qui déclencheraient à tort la regex carte → mauvaise catégorie dans le log).
         if _IBAN.search(text) or _CARD.search(text) or _PASSWORD.search(norm):
-            return self._block("output", "pii", "rules")
+            return self._block("output", "pii", "rules", user_id)
 
         # Secret / toxicité qui auraient dérivé dans la réponse (défense en profondeur).
         for category, patterns in _OUTPUT_TEXT_DETECTORS:
             if any(p.search(norm) for p in patterns):
-                return self._block("output", category, "rules")
+                return self._block("output", category, "rules", user_id)
 
         # 2e ligne : LLM-juge sur la sortie (fuite reformulée, dérive sémantique),
         # RESTREINT aux catégories qui ont un sens pour une réponse (cf. ci-dessus)
@@ -230,6 +257,6 @@ class GuardrailEngine:
         if llm_generated and self.moderator is not None:
             category = self.moderator(text)
             if category in _OUTPUT_MODERATOR_CATEGORIES:
-                return self._block("output", category, "moderator")
+                return self._block("output", category, "moderator", user_id)
 
         return Decision(allowed=True, action="allow")
